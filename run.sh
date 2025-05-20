@@ -6,4 +6,4 @@ if [ ! -d "debug" ]; then
     mkdir -p debug
 fi
 
-odin run src/ -out:debug/http-server -sanitize:address -debug
+odin run src/ -out:debug/orion -sanitize:address -debug
