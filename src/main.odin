@@ -6,11 +6,12 @@ import "core:net"
 import "core:os/os2"
 import "core:strconv"
 import "core:strings"
+import "core:thread"
 
 CRLF :: "\r\n"
 
 HTTP_Response :: struct {
-	headers: HTTP_HEADERS, // 32 bytes
+	headers: map[string]string, // 32 bytes
 	body:    string, // 16 bytes
 	status:  HTTP_STATUS_CODE, // 8 bytes
 }
@@ -31,7 +32,6 @@ HTTP_METHOD :: enum {
 	DELETE,
 }
 
-HTTP_HEADERS :: map[string]string
 HEADER_CONTENT_TYPE :: "Content-Type"
 HEADER_CONTENT_LENGTH :: "Content-Length"
 HEADER_USER_AGENT :: "User-Agent"
@@ -73,7 +73,7 @@ HTTP_Request :: struct {
 	method:   HTTP_METHOD,
 	path:     string,
 	protocol: string,
-	headers:  HTTP_HEADERS,
+	headers:  map[string]string,
 }
 
 parse_request :: proc(request: []byte, byte_len: int) -> HTTP_Request {
@@ -124,26 +124,17 @@ parse_request :: proc(request: []byte, byte_len: int) -> HTTP_Request {
 	return HTTP_Request{method = method, path = path, protocol = protocol, headers = headers}
 }
 
-main :: proc() {
-	socket, lerr := net.listen_tcp(
-		net.Endpoint{address = net.IP4_Address{0, 0, 0, 0}, port = 4221},
-	)
-	defer net.close(socket)
-	if lerr != nil {
-		fmt.println("Failed to bind to port 4221")
-		os2.exit(1)
-	}
+Thread_Data :: struct {
+	tcp_socket: net.TCP_Socket,
+}
 
-	tcp_socket, _, aerr := net.accept_tcp(socket)
-	if aerr != nil {
-		fmt.println("Error accepting connection: ", aerr)
-		os2.exit(1)
-	}
-	defer net.close(tcp_socket)
+thread_proc :: proc(d: Thread_Data) {
+	defer net.close(d.tcp_socket)
+	fmt.println("Thread starting")
 
 	request_byte := make([]byte, 1024)
-
-	bytes_read, rerr := net.recv_tcp(tcp_socket, request_byte)
+	defer delete(request_byte)
+	bytes_read, rerr := net.recv_tcp(d.tcp_socket, request_byte)
 	if rerr != nil {
 		fmt.println("Error receiving connection: ", rerr)
 		os2.exit(1)
@@ -155,7 +146,7 @@ main :: proc() {
 	defer delete(request.headers)
 
 	if request.path == "/" {
-		net.send_tcp(tcp_socket, to_http_response(HTTP_Response{status = .OK}))
+		net.send_tcp(d.tcp_socket, to_http_response(HTTP_Response{status = .OK}))
 	} else if strings.has_prefix(request.path, "/echo/") {
 		content := strings.trim_prefix(request.path, "/echo/")
 
@@ -166,13 +157,44 @@ main :: proc() {
 		defer delete(headers)
 
 		net.send_tcp(
-			tcp_socket,
+			d.tcp_socket,
 			to_http_response(HTTP_Response{status = .OK, headers = headers, body = content}),
 		)
 	} else if request.path == "/user-agent" {
 		user_agent := request.headers[HEADER_USER_AGENT]
-		net.send_tcp(tcp_socket, to_http_response(HTTP_Response{status = .OK, body = user_agent}))
+		net.send_tcp(
+			d.tcp_socket,
+			to_http_response(HTTP_Response{status = .OK, body = user_agent}),
+		)
 	} else {
-		net.send_tcp(tcp_socket, to_http_response(HTTP_Response{status = .NOT_FOUND}))
+		net.send_tcp(d.tcp_socket, to_http_response(HTTP_Response{status = .NOT_FOUND}))
+	}
+
+	fmt.println("Thread finishing")
+}
+
+main :: proc() {
+	socket, lerr := net.listen_tcp(
+		net.Endpoint{address = net.IP4_Address{0, 0, 0, 0}, port = 4221},
+	)
+	defer net.close(socket)
+	if lerr != nil {
+		fmt.println("Failed to bind to port 4221")
+		os2.exit(1)
+	}
+
+	for {
+		tcp_socket, _, aerr := net.accept_tcp(socket)
+		if aerr != nil {
+			fmt.println("Error accepting connection: ", aerr)
+			os2.exit(1)
+		}
+
+		d := Thread_Data {
+			tcp_socket = tcp_socket,
+		}
+
+		t := thread.create_and_start_with_poly_data(d, thread_proc, nil, .Normal, true)
+		assert(t != nil)
 	}
 }
