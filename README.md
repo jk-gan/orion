@@ -1,5 +1,5 @@
 <p align="center">
-  <img alt="Groundwork Logo" src=".github/media/orion.jpg" width="450">
+  <img alt="Orion" src=".github/media/orion.png" width="450">
   <h1 align="center">
     Handmade HTTP Server from scratch
   </h1>
