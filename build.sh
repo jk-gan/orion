@@ -4,4 +4,4 @@ if [ ! -d "build" ]; then
     mkdir -p build
 fi
 
-odin build src/ -out:build/orion -show-timings
+odin build src/ -out:build/orion -o:speed -show-timings
