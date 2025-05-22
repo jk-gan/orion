@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:mem"
 import "core:net"
 import "core:os/os2"
+import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "core:thread"
@@ -126,6 +127,7 @@ parse_request :: proc(request: []byte, byte_len: int) -> HTTP_Request {
 
 Thread_Data :: struct {
 	tcp_socket: net.TCP_Socket,
+	file_dir:   Maybe(string),
 }
 
 thread_proc :: proc(d: Thread_Data) {
@@ -166,6 +168,34 @@ thread_proc :: proc(d: Thread_Data) {
 			d.tcp_socket,
 			to_http_response(HTTP_Response{status = .OK, body = user_agent}),
 		)
+	} else if strings.has_prefix(request.path, "/files/") {
+		filename := strings.trim_prefix(request.path, "/files/")
+		if file_dir, has_value := d.file_dir.?; has_value {
+			file_path, err := strings.concatenate({file_dir, filename})
+			assert(err == nil)
+			content, rerr := os2.read_entire_file_from_path(file_path, context.allocator)
+			if rerr != nil {
+				if rerr == os2.General_Error.Not_Exist {
+					net.send_tcp(
+						d.tcp_socket,
+						to_http_response(HTTP_Response{status = .NOT_FOUND}),
+					)
+				}
+			} else {
+				headers := make(map[string]string)
+				headers[HEADER_CONTENT_TYPE] = "application/octet-stream"
+				content_length: [4]byte
+				headers[HEADER_CONTENT_LENGTH] = strconv.itoa(content_length[:], len(content))
+				defer delete(headers)
+
+				net.send_tcp(
+					d.tcp_socket,
+					to_http_response(HTTP_Response{status = .OK, body = string(content)}),
+				)
+			}
+		} else {
+			net.send_tcp(d.tcp_socket, to_http_response(HTTP_Response{status = .NOT_FOUND}))
+		}
 	} else {
 		net.send_tcp(d.tcp_socket, to_http_response(HTTP_Response{status = .NOT_FOUND}))
 	}
@@ -174,6 +204,17 @@ thread_proc :: proc(d: Thread_Data) {
 }
 
 main :: proc() {
+	fmt.println(os2.args)
+	args := os2.args
+	file_dir: Maybe(string)
+
+	if len(args) > 1 {
+		if args[1] == "--directory" {
+			file_dir = args[2]
+			fmt.println("Directory set to: ", file_dir)
+		}
+	}
+
 	socket, lerr := net.listen_tcp(
 		net.Endpoint{address = net.IP4_Address{0, 0, 0, 0}, port = 4221},
 	)
@@ -192,6 +233,7 @@ main :: proc() {
 
 		d := Thread_Data {
 			tcp_socket = tcp_socket,
+			file_dir   = file_dir,
 		}
 
 		t := thread.create_and_start_with_poly_data(d, thread_proc, nil, .Normal, true)
