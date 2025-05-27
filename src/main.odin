@@ -9,6 +9,7 @@ import "core:strconv"
 import "core:strings"
 import "core:thread"
 
+MAX_REQUEST_SIZE :: 64 * 1024 // 64KB limit
 CRLF :: "\r\n"
 
 HTTP_Response :: struct {
@@ -21,6 +22,7 @@ HTTP_Response :: struct {
 
 HTTP_STATUS_CODE :: enum {
 	OK,
+	CREATED,
 	NOT_FOUND,
 }
 #assert(size_of(HTTP_STATUS_CODE) == 8)
@@ -45,6 +47,8 @@ to_http_response :: proc(response: HTTP_Response) -> []byte {
 	switch response.status {
 	case .OK:
 		strings.write_string(&sb, "HTTP/1.1 200 OK\r\n")
+	case .CREATED:
+		strings.write_string(&sb, "HTTP/1.1 201 Created\r\n")
 	case .NOT_FOUND:
 		strings.write_string(&sb, "HTTP/1.1 404 NOT FOUND\r\n")
 	}
@@ -72,9 +76,10 @@ to_http_response :: proc(response: HTTP_Response) -> []byte {
 
 HTTP_Request :: struct {
 	method:   HTTP_METHOD,
-	path:     string,
+	target:   string,
 	protocol: string,
 	headers:  map[string]string,
+	body:     string,
 }
 
 parse_request :: proc(request: []byte, byte_len: int) -> HTTP_Request {
@@ -88,7 +93,7 @@ parse_request :: proc(request: []byte, byte_len: int) -> HTTP_Request {
 
 	// if len(parts) != 3 do return
 	method_str := parts[0]
-	path := parts[1]
+	target := parts[1]
 	protocol := parts[2]
 
 	method: HTTP_METHOD
@@ -107,8 +112,10 @@ parse_request :: proc(request: []byte, byte_len: int) -> HTTP_Request {
 	}
 
 	headers := make(map[string]string)
+	body_index := 0
 	for i := 1; i < len(lines); i += 1 {
 		if lines[i] == "" {
+			body_index = i + 1
 			break
 		}
 
@@ -122,7 +129,16 @@ parse_request :: proc(request: []byte, byte_len: int) -> HTTP_Request {
 		headers[key] = value
 	}
 
-	return HTTP_Request{method = method, path = path, protocol = protocol, headers = headers}
+	body := lines[body_index]
+	fmt.println("body", body)
+
+	return HTTP_Request {
+		method = method,
+		target = target,
+		protocol = protocol,
+		headers = headers,
+		body = body,
+	}
 }
 
 Thread_Data :: struct {
@@ -134,8 +150,9 @@ thread_proc :: proc(d: Thread_Data) {
 	defer net.close(d.tcp_socket)
 	fmt.println("Thread starting")
 
-	request_byte := make([]byte, 1024)
+	request_byte := make([]byte, MAX_REQUEST_SIZE)
 	defer delete(request_byte)
+
 	bytes_read, rerr := net.recv_tcp(d.tcp_socket, request_byte)
 	if rerr != nil {
 		fmt.println("Error receiving connection: ", rerr)
@@ -147,10 +164,10 @@ thread_proc :: proc(d: Thread_Data) {
 	request := parse_request(request_byte, bytes_read)
 	defer delete(request.headers)
 
-	if request.path == "/" {
+	if request.method == .GET && request.target == "/" {
 		net.send_tcp(d.tcp_socket, to_http_response(HTTP_Response{status = .OK}))
-	} else if strings.has_prefix(request.path, "/echo/") {
-		content := strings.trim_prefix(request.path, "/echo/")
+	} else if request.method == .GET && strings.has_prefix(request.target, "/echo/") {
+		content := strings.trim_prefix(request.target, "/echo/")
 
 		headers := make(map[string]string)
 		headers[HEADER_CONTENT_TYPE] = "text/plain"
@@ -162,14 +179,14 @@ thread_proc :: proc(d: Thread_Data) {
 			d.tcp_socket,
 			to_http_response(HTTP_Response{status = .OK, headers = headers, body = content}),
 		)
-	} else if request.path == "/user-agent" {
+	} else if request.method == .GET && request.target == "/user-agent" {
 		user_agent := request.headers[HEADER_USER_AGENT]
 		net.send_tcp(
 			d.tcp_socket,
 			to_http_response(HTTP_Response{status = .OK, body = user_agent}),
 		)
-	} else if strings.has_prefix(request.path, "/files/") {
-		filename := strings.trim_prefix(request.path, "/files/")
+	} else if request.method == .GET && strings.has_prefix(request.target, "/files/") {
+		filename := strings.trim_prefix(request.target, "/files/")
 		if file_dir, has_value := d.file_dir.?; has_value {
 			file_path, err := strings.concatenate({file_dir, filename})
 			assert(err == nil)
@@ -196,6 +213,20 @@ thread_proc :: proc(d: Thread_Data) {
 		} else {
 			net.send_tcp(d.tcp_socket, to_http_response(HTTP_Response{status = .NOT_FOUND}))
 		}
+	} else if request.method == .POST && strings.has_prefix(request.target, "/files/") {
+		filename := strings.trim_prefix(request.target, "/files/")
+		if file_dir, has_value := d.file_dir.?; has_value {
+			file_path, err := strings.concatenate({file_dir, filename})
+			assert(err == nil)
+
+			werr := os2.write_entire_file(file_path, transmute([]u8)request.body)
+			assert(werr == nil)
+
+			net.send_tcp(d.tcp_socket, to_http_response(HTTP_Response{status = .CREATED}))
+		} else {
+			net.send_tcp(d.tcp_socket, to_http_response(HTTP_Response{status = .NOT_FOUND}))
+		}
+
 	} else {
 		net.send_tcp(d.tcp_socket, to_http_response(HTTP_Response{status = .NOT_FOUND}))
 	}
