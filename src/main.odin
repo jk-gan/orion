@@ -23,7 +23,12 @@ HTTP_Response :: struct {
 HTTP_STATUS_CODE :: enum {
 	OK,
 	CREATED,
-	NOT_FOUND,
+	BAD_REQUEST, // 400
+	UNAUTHORIZED, // 401
+	PAYMENT_REQUIRED, // 402
+	FORBIDDEN, // 403
+	NOT_FOUND, // 404
+	METHOD_NOT_ALLOWED, // 405
 }
 #assert(size_of(HTTP_STATUS_CODE) == 8)
 #assert(align_of(HTTP_STATUS_CODE) == 8)
@@ -49,8 +54,18 @@ to_http_response :: proc(response: HTTP_Response) -> []byte {
 		strings.write_string(&sb, "HTTP/1.1 200 OK\r\n")
 	case .CREATED:
 		strings.write_string(&sb, "HTTP/1.1 201 Created\r\n")
+	case .BAD_REQUEST:
+		strings.write_string(&sb, "HTTP/1.1 400 Bad Request\r\n")
+	case .UNAUTHORIZED:
+		strings.write_string(&sb, "HTTP/1.1 401 Unauthorized\r\n")
+	case .PAYMENT_REQUIRED:
+		strings.write_string(&sb, "HTTP/1.1 402 Payment Required\r\n")
+	case .FORBIDDEN:
+		strings.write_string(&sb, "HTTP/1.1 403 Forbidden\r\n")
 	case .NOT_FOUND:
-		strings.write_string(&sb, "HTTP/1.1 404 NOT FOUND\r\n")
+		strings.write_string(&sb, "HTTP/1.1 404 Not Found\r\n")
+	case .METHOD_NOT_ALLOWED:
+		strings.write_string(&sb, "HTTP/1.1 405 Method Not Allowed\r\n")
 	}
 
 	// Headers
@@ -123,6 +138,7 @@ parse_request :: proc(request: []byte, byte_len: int) -> HTTP_Request {
 		if err != nil {
 			continue
 		}
+		defer delete(header_parts)
 
 		key := header_parts[0]
 		value := header_parts[1]
@@ -165,7 +181,10 @@ thread_proc :: proc(d: Thread_Data) {
 	defer delete(request.headers)
 
 	if request.method == .GET && request.target == "/" {
-		net.send_tcp(d.tcp_socket, to_http_response(HTTP_Response{status = .OK}))
+		net.send_tcp(
+			d.tcp_socket,
+			to_http_response(HTTP_Response{status = .OK, body = "<h1>Hello World</h1>"}),
+		)
 	} else if request.method == .GET && strings.has_prefix(request.target, "/echo/") {
 		content := strings.trim_prefix(request.target, "/echo/")
 
